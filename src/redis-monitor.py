@@ -9,7 +9,8 @@ import threading
 import traceback
 import argparse
 import time
-
+import re
+    
 
 class Monitor(object):
     """Monitors a given Redis server using the MONITOR command.
@@ -64,7 +65,7 @@ class MonitorThread(threading.Thread):
     provider.
     """
 
-    def __init__(self, server, port, password=None):
+    def __init__(self, server, port, password=None ):
         """Initializes a MontitorThread.
 
         Args:
@@ -80,7 +81,7 @@ class MonitorThread(threading.Thread):
         self.password = password
         self.id = self.server + ":" + str(self.port)
         self._stop = threading.Event()
-
+    
     def stop(self):
         """Stops the thread.
         """
@@ -90,6 +91,30 @@ class MonitorThread(threading.Thread):
         """Returns True if the thread is stopped, False otherwise.
         """
         return self._stop.is_set()
+    
+    @staticmethod
+    def __default_key_parser(command, key, arguments):
+        _arguments = [ k.replace('"', '') for k in arguments ]
+        return command, key, _arguments
+
+    @staticmethod
+    def __regexp_key_parser(command, key, arguments):
+        key_translators = {
+         "^(U):(\d+)" : "\\1:<UID>",
+         "^(UserNotification):(\d+)" :"\\1:<UID>"
+        }
+        key_translators = dict([(re.compile(k), key_translators[k]) for k in key_translators])
+        
+        _command, _key, _argument_list = command, key, arguments
+        if key:
+            for expr in key_translators:
+                if expr.match(key):
+                    _key = expr.sub(key_translators[expr], key)
+                    break
+        if arguments:
+            pass
+    
+        return _command, _key, _argument_list
 
     def run(self):
         """Runs the thread.
@@ -120,23 +145,23 @@ class MonitorThread(threading.Thread):
                     keyname = parts[2].replace('"', '').strip()
                 else:
                     keyname = None
-
+                argument_list = []
                 if len(parts) > 3:
                     # TODO: This is probably more efficient as a list
                     # comprehension wrapped in " ".join()
-                    arguments = ""
-                    for x in xrange(3, len(parts)):
-                        arguments += " " + parts[x].replace('"', '')
-                    arguments = arguments.strip()
-                else:
-                    arguments = None
+                    argument_list = parts[3:]
 
+                for parser in [self.__default_key_parser, self.__regexp_key_parser]:
+                    command, keyname, arguments = parser(command, keyname, argument_list)          
+                arguments = " ".join(argument_list)
+                print command, keyname, arguments
+                
                 if not command == 'INFO' and not command == 'MONITOR':
                     stats_provider.save_monitor_command(self.id, 
                                                         timestamp, 
                                                         command, 
-                                                        str(keyname), 
-                                                        str(arguments))
+                                                        keyname, 
+                                                        arguments)
 
             except Exception, e:
                 tb = traceback.format_exc()
@@ -231,6 +256,9 @@ class InfoThread(threading.Thread):
                 print tb
                 print "==============================\n"
 
+
+
+
 class RedisMonitor(object):
 
     def __init__(self):
@@ -279,6 +307,7 @@ class RedisMonitor(object):
         self.active = False
 
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Monitor redis.')
     parser.add_argument('--duration',
@@ -289,7 +318,10 @@ if __name__ == '__main__':
                         help="do  not write anything to standard output",
                         required=False,
                         action='store_true')
+    
+    
     args = parser.parse_args()
     duration = args.duration
+    
     monitor = RedisMonitor()
     monitor.run(duration)
